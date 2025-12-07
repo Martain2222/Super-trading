@@ -1,0 +1,349 @@
+//+------------------------------------------------------------------+
+//|        Firebird v0.66 - MA envelope exhaustion system (updated)  |
+//+------------------------------------------------------------------+
+#property copyright "Copyright (c) 2005, TraderSeven"
+#property link      "TraderSeven@gmx.net"
+
+//            \\|//             +-+-+-+-+-+-+-+-+-+-+-+             \\|//
+//           ( o o )            |T|r|a|d|e|r|S|e|v|e|n|            ( o o )
+//    ~~~~oOOo~(_)~oOOo~~~~     +-+-+-+-+-+-+-+-+-+-+-+     ~~~~oOOo~(_)~oOOo~~~~
+//
+// Firebird calculates a 10 day SMA and then shifts it up and down a percentage
+// to form a channel. When price breaks a band, a position in the opposite
+// direction of the current move is opened. If price goes against us, we open
+// extra positions to average into the move.
+//
+// Original idea by TraderSeven, this version lightly modernised for newer MT4:
+// - input parameters (instead of extern)
+// - automatic 4/5 digit pip handling
+// - no change in core trading logic
+//
+// 01010100 01110010 01100001 01100100 01100101 01110010
+// 01010011 01100101 01110110 01100101 01101110
+//+------------------------------------------------------------------+
+//                          USER INPUTS
+//+------------------------------------------------------------------+
+input int      MA_length      = 10;
+input int      MA_timeframe   = 0;     // 0 = current TF
+input int      MAtype         = 0;     // 0 = close, 1 = HL
+input double   Percent        = 0.3;
+input int      TradeOnFriday  = 1;     // >0 trades on Friday
+input int      slip           = 100;   // slippage (points, exits only)
+input double   Lots           = 0.10;
+input int      TakeProfit     = 120;   // TP (pips)
+input int      Stoploss       = 200;   // total loss on all open positions in pips
+input int      PipStep        = 30;    // distance (pips) between grid entries
+input double   IncreasementType = 0.0; // 0=constant, >0 = OrdersTotal()^x * PipStep
+input int      MagicNumber    = 12345;
+input bool     UseTrailingStop = true;
+input int      TrailingStop   = 15;    // trailing stop (pips)
+
+//+------------------------------------------------------------------+
+//                         GLOBAL VARIABLES
+//+------------------------------------------------------------------+
+double slBUY = 0, slSEL = 0, sl = 0;
+double p;               // pip in price units (auto 4/5 digits)
+double Stopper = 0;
+double KeepStopLoss = 0;
+double KeepAverage;
+double dummy;
+double spread = 0;
+double CurrentPipStep;
+int    OrderWatcher = 0;
+int    myTotal      = 0;
+int    cnt          = 0;
+int    total        = 0;
+double LastPrice    = 0;
+
+//+------------------------------------------------------------------+
+//                           HELPER FUNCTIONS
+//+------------------------------------------------------------------+
+double Pip()
+{
+   // auto-adjust 4/5 digit brokers
+   if (Digits == 3 || Digits == 5) return(Point * 10.0);
+   return(Point);
+}
+
+//+------------------------------------------------------------------+
+//                           MAIN PROGRAM
+//+------------------------------------------------------------------+
+int start()
+{
+   p = Pip();
+
+   double PriceTarget   = 0.0;
+   double AveragePrice  = 0.0;
+   int    OpeningDay    = 0;
+
+   //--- RECALCULATE PIPSTEP
+   CurrentPipStep = PipStep;
+   if (IncreasementType > 0.0)
+   {
+      CurrentPipStep = MathPow(OrdersTotal(), IncreasementType) * PipStep;
+   }
+
+   /////////////////////////////////////////////////////////////////////////////
+   // BACKTESTER FIX:  DO NOT PLACE AN ORDER IF WE JUST CLOSED
+   // AN ORDER WITHIN Period() MINUTES AGO
+   /////////////////////////////////////////////////////////////////////////////
+   datetime orderclosetime;
+   string   rightnow;
+   int      rightnow2;
+   int      TheHistoryTotal = HistoryTotal();
+   int      difference;
+   int      flag = 0;
+
+   for (cnt = 0; cnt < TheHistoryTotal; cnt++)
+   {
+      if (OrderSelect(cnt, SELECT_BY_POS, MODE_HISTORY))
+      {
+         if (OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+         {
+            orderclosetime = OrderCloseTime();
+            rightnow = Year() + "-" + Month() + "-" + Day() + " "
+                       + Hour() + ":" + Minute() + ":" + Seconds();
+            rightnow2 = StrToTime(rightnow);
+            difference = rightnow2 - orderclosetime;
+            if (Period() * 60 * 2 > difference) // at least 2 periods away
+            {
+               flag = 1;
+               break;
+            }
+         }
+      }
+   }
+
+   //--- if we closed very recently, skip new trades this tick
+   if (flag == 1) return(0);
+
+   //=================================================================
+   //                ENTER POSITION BASED ON OPEN
+   //=================================================================
+   OrderWatcher = 0;
+   myTotal      = 0;
+   int Direction = 0;   //1=long, 11=avoid long, 2=short, 22=avoid short
+
+   if (DayOfWeek() != 5 || TradeOnFriday > 0)
+   {
+      total = OrdersTotal();
+      for (cnt = total - 1; cnt >= 0; cnt--)
+      {
+         if (!OrderSelect(cnt, SELECT_BY_POS, MODE_TRADES)) continue;
+         if (OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+         {
+            LastPrice = OrderOpenPrice();
+            myTotal++;
+            break;
+         }
+      }
+   }
+
+   if (myTotal == 0) OpeningDay = DayOfYear();
+
+   //--- BASED ON CLOSE/OPEN PRICE
+   if (MAtype == 0)
+   {
+      double myMA = iMA(NULL,
+                        MA_timeframe,
+                        MA_length,
+                        0,
+                        MODE_SMA,
+                        PRICE_OPEN,
+                        0);
+
+      // SHORT: price above upper band
+      if ((myMA * (1 + Percent / 100.0)) < Bid &&
+          Direction != 22 &&
+          (Bid >= (LastPrice + CurrentPipStep * p) || myTotal == 0))
+      {
+         double slSell = Bid + Stoploss * p;
+         double tpSell = Bid - TakeProfit * p;
+         OrderSend(Symbol(), OP_SELL, Lots, Bid, slip,
+                   slSell, tpSell, "Firebird SELL", MagicNumber, 0, Red);
+         OrderWatcher = 1;
+         Direction    = 2;
+      }
+
+      // LONG: price below lower band
+      if ((myMA * (1 - Percent / 100.0)) > Ask &&
+          Direction != 11 &&
+          (Ask <= (LastPrice - CurrentPipStep * p) || myTotal == 0))
+      {
+         double slBuy = Ask - Stoploss * p;
+         double tpBuy = Ask + TakeProfit * p;
+         OrderSend(Symbol(), OP_BUY, Lots, Ask, slip,
+                   slBuy, tpBuy, "Firebird BUY", MagicNumber, 0, Blue);
+         OrderWatcher = 1;
+         Direction    = 1;
+      }
+   }
+
+   //--- BASED ON HIGH/LOW
+   if (MAtype == 1)
+   {
+      double maHigh = iMA(NULL, MA_timeframe, MA_length, 0, MODE_SMA, PRICE_HIGH, 0);
+      double maLow  = iMA(NULL, MA_timeframe, MA_length, 0, MODE_SMA, PRICE_LOW, 0);
+
+      // SHORT
+      if ((maHigh * (1 + Percent / 100.0)) < Bid &&
+          Direction != 22 &&
+          (Bid >= (LastPrice + CurrentPipStep * p) || myTotal == 0))
+      {
+         double slSell = Bid + Stoploss * p;
+         double tpSell = Bid - TakeProfit * p;
+         OrderSend(Symbol(), OP_SELL, Lots, Bid, slip,
+                   slSell, tpSell, "Firebird SELL", MagicNumber, 0, Red);
+         OrderWatcher = 1;
+         Direction    = 2;
+      }
+
+      // LONG
+      if ((maLow * (1 - Percent / 100.0)) > Ask &&
+          Direction != 11 &&
+          (Ask <= (LastPrice - CurrentPipStep * p) || myTotal == 0))
+      {
+         double slBuy = Ask - Stoploss * p;
+         double tpBuy = Ask + TakeProfit * p;
+         OrderSend(Symbol(), OP_BUY, Lots, Ask, slip,
+                   slBuy, tpBuy, "Firebird BUY", MagicNumber, 0, Blue);
+         OrderWatcher = 1;
+         Direction    = 1;
+      }
+   }
+
+   //=================================================================
+   //         CALCULATE AVERAGE OPEN PRICE OF ALL OPEN POSITIONS
+   //=================================================================
+   total        = OrdersTotal();
+   AveragePrice = 0;
+   int myOrderType = -1;
+   myTotal      = 0;
+
+   if (total > 1 && OrderWatcher == 1)
+   {
+      for (cnt = 0; cnt < total; cnt++)
+      {
+         if (!OrderSelect(cnt, SELECT_BY_POS, MODE_TRADES)) continue;
+         if (OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+         {
+            AveragePrice += OrderOpenPrice();
+            myOrderType   = OrderType();
+            myTotal++;
+         }
+      }
+      AveragePrice = AveragePrice / MathMax(myTotal, 1);
+   }
+
+   //--- RECALCULATE SL & TP BASED ON AVERAGE PRICE
+   if (myOrderType == OP_BUY && OrderWatcher == 1 && myTotal > 1)
+   {
+      PriceTarget = AveragePrice + TakeProfit * p;
+      Stopper     = AveragePrice - (Stoploss * p) / myTotal;
+   }
+   if (myOrderType == OP_SELL && OrderWatcher == 1 && myTotal > 1)
+   {
+      PriceTarget = AveragePrice - TakeProfit * p;
+      Stopper     = AveragePrice + (Stoploss * p) / myTotal;
+   }
+
+   //--- APPLY NEW AVERAGED SL/TP TO ALL OPEN ORDERS
+   if (OrderWatcher == 1 && myTotal > 1)
+   {
+      total = OrdersTotal();
+      for (cnt = 0; cnt < total; cnt++)
+      {
+         if (!OrderSelect(cnt, SELECT_BY_POS, MODE_TRADES)) continue;
+         if (OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+         {
+            OrderModify(OrderTicket(), OrderOpenPrice(), Stopper, PriceTarget, 0, Yellow);
+         }
+      }
+   }
+
+   //=================================================================
+   //          KEEP TRACK OF STOPLOSS TO AVOID RUNAWAY MARKETS
+   //=================================================================
+   if (OrdersTotal() > 0)
+   {
+      myOrderType = -1;
+      myTotal     = 0;
+      total       = OrdersTotal();
+      AveragePrice = 0;
+
+      for (cnt = 0; cnt < total; cnt++)
+      {
+         if (!OrderSelect(cnt, SELECT_BY_POS, MODE_TRADES)) continue;
+         if (OrderSymbol() == Symbol() && OrderMagicNumber() == MagicNumber)
+         {
+            KeepStopLoss = OrderStopLoss();
+            AveragePrice += OrderOpenPrice();
+            myTotal++;
+            myOrderType = OrderType();
+         }
+      }
+
+      AveragePrice = AveragePrice / MathMax(myTotal, 1);
+      KeepAverage  = AveragePrice;
+      Direction    = 0;
+      if (myOrderType == OP_BUY)  Direction = 1;
+      if (myOrderType == OP_SELL) Direction = 2;
+   }
+
+   if (KeepStopLoss != 0)
+   {
+      spread = MathAbs(KeepAverage - KeepStopLoss) / 2.0;
+      dummy  = (Bid + Ask) / 2.0;
+
+      if (KeepStopLoss < (dummy + spread) && KeepStopLoss > (dummy - spread))
+      {
+         // a stoploss was hit
+         if (Direction == 1) Direction = 11; // no more longs
+         if (Direction == 2) Direction = 22; // no more shorts
+      }
+      KeepStopLoss = 0;
+   }
+
+   //=================================================================
+   //                         TRAILING STOP
+   //=================================================================
+   if (UseTrailingStop)
+   {
+      for (cnt = 0; cnt < OrdersTotal(); cnt++)
+      {
+         if (!OrderSelect(cnt, SELECT_BY_POS, MODE_TRADES)) continue;
+         if (OrderSymbol() != Symbol() || OrderMagicNumber() != MagicNumber)
+            continue;
+
+         if (OrderType() == OP_BUY)
+         {
+            if (Bid - OrderOpenPrice() > TrailingStop * p)
+            {
+               slBUY = OrderStopLoss();
+               sl    = Bid - TrailingStop * p;
+               if (slBUY < sl)
+               {
+                  Print("TSD trailstop Buy: ", Symbol(), " ", sl, ", ", Bid);
+                  OrderModify(OrderTicket(), OrderOpenPrice(), sl, OrderTakeProfit(), 0);
+               }
+            }
+         }
+         else if (OrderType() == OP_SELL)
+         {
+            if (OrderOpenPrice() - Ask > TrailingStop * p)
+            {
+               slSEL = OrderStopLoss();
+               sl    = Ask + TrailingStop * p;
+               if (slSEL > sl)
+               {
+                  Print("TSD trailstop Sell: ", Symbol(), " ", sl, ", ", Ask);
+                  OrderModify(OrderTicket(), OrderOpenPrice(), sl, OrderTakeProfit(), 0);
+               }
+            }
+         }
+      }
+   }
+
+   return(0);
+}
+//+------------------------------------------------------------------+
