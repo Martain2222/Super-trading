@@ -1,5 +1,5 @@
 
-- **V1–V4** are incremental; each file contains the full EA with that version’s features.
+- **V1–V6** are incremental; each file contains the full EA with that version’s features.
 - We may also mirror **popular public EAs** (unmodified) in separate folders with their original licenses/links. PRs welcome—respect original authorship.
 
 ---

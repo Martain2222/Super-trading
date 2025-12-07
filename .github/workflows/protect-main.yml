@@ -1,0 +1,40 @@
+name: Protect main files
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check-files:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check required files exist
+        run: |
+          REQUIRED_FILES=(
+            "Super-trading-bot-V1.mq4"
+            "Super-trading-bot-V2.mq4"
+            "Super-trading-bot-V3.mq4"
+            "Super-trading-bot-V4.mq4"
+            "Super-trading-bot-V5.mq4"
+            "Super-trading-bot-V6.mq4"
+          )
+
+          missing=0
+          for f in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Required file '$f' is missing. It cannot be deleted from main."
+              missing=1
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
