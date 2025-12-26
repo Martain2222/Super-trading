@@ -1,0 +1,107 @@
+1. Simple Trading Strategy Prompt
+
+"Create a profitable trading strategy for me. Include the market traded, timeframe, indicators used, entry rules, exit rules, risk management, stop-loss, take-profit, and example trades."
+
+2. Detailed Trading Strategy Prompt
+
+"Generate a complete and profitable trading strategy. Include the following:
+
+Market (Forex, Crypto, Stocks, Indices, etc.)
+
+Timeframe
+
+Trading style (Scalping, Day Trading, Swing, Position)
+
+Indicators and settings
+
+Entry conditions
+
+Exit conditions
+
+Stop-loss and take-profit logic
+
+Risk management (1–2% risk rule, R:R ratio, position sizing)
+
+Market conditions where the strategy performs best
+
+Backtest-style example trades
+
+Common pitfalls to avoid
+
+How to optimize or improve the strategy."
+
+3. Advanced Professional Trading Strategy Prompt
+
+"Act as a professional quantitative analyst and create an advanced trading strategy. Include:
+
+Strategy Framework:
+
+Market and instrument specifications
+
+Timeframe and session filters
+
+Strategy category (trend-following, mean reversion, breakout, volatility-based)
+
+Algorithmic logic and indicator formulas
+
+Entry Logic:
+
+Exact indicator conditions
+
+Confirmation filters
+
+Multi-timeframe conditions
+
+Volatility and volume filters
+
+Exit Logic:
+
+Mechanical exit rules
+
+Dynamic and static stop-loss rules
+
+Trailing stop methodology
+
+Take-profit formulas (ATR-based, volatility-based, R:R based)
+
+Risk and Money Management:
+
+Maximum account risk
+
+Per-trade risk
+
+Position sizing formula
+
+Minimum risk-to-reward targets
+
+Drawdown protection rules
+
+Filters:
+
+News filter
+
+Trend filter
+
+Market regime filter
+
+Backtest Style Output:
+
+Example trade data
+
+Estimated win rate
+
+Expected risk-to-reward ratio
+
+Profit factor
+
+Drawdown assumptions
+
+Optimization:
+
+Indicator alternatives
+
+Tunable settings
+
+Failure conditions
+
+Adaptation instructions for algorithmic trading (Pine Script, Python)."
